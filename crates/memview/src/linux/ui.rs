@@ -7,6 +7,7 @@ use super::model::{
 use super::nav::FooterHint;
 use super::search::SearchRole;
 use libshimmer::{Motion, Palette};
+use libshimmer_ratatui::RowExt as _;
 use ratatui::Frame;
 use ratatui::layout::{Constraint, Direction, Layout, Rect};
 use ratatui::style::{Color, Modifier, Style};

@@ -4,7 +4,7 @@ use std::hash::{BuildHasher, RandomState};
 use std::time::{Duration, Instant};
 
 use color_eyre::eyre::{Result, eyre};
-use libshimmer::{Glyphs, Intensity, Recipe, Shimmer, Spell, Wide, stock};
+use libshimmer::{Glyphs, Intensity, Recipe, Shimmer, Spell, stock};
 
 use super::app::App;
 
@@ -64,7 +64,7 @@ impl Activity {
         let seed = RandomState::new().hash_one(());
         let fitting: Vec<&'static Recipe> = stock::ROSTER
             .iter()
-            .filter(|recipe| recipe.fits::<Wide>(GLYPHS).is_ok())
+            .filter(|recipe| recipe.fits(GLYPHS).is_ok())
             .collect();
         let recipe = seed
             .checked_rem(u64::try_from(fitting.len())?)

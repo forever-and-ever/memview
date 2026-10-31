@@ -494,13 +494,22 @@ checksum = "b6d2cec3eae94f9f509c767b45932f1ada8350c4bdb85af2fcab4a3c14807981"
 
 [[package]]
 name = "libshimmer"
-version = "0.1.0"
+version = "1.0.0"
 source = "registry+https://github.com/rust-lang/crates.io-index"
-checksum = "6fbef4f10aaebe4ecad70be5c9bf5a4a0bdb766d5632fc982dfe8787d131d9aa"
+checksum = "cc93639c3e1d0d44ab18ee1368afab739830f6b0758a5bd1b8aff57f6ca716c9"
 dependencies = [
- "ratatui-core",
  "unicode-segmentation",
  "unicode-width",
+]
+
+[[package]]
+name = "libshimmer-ratatui"
+version = "0.1.0"
+source = "registry+https://github.com/rust-lang/crates.io-index"
+checksum = "f68877c17f0f68eafa291feb7733c9b5fd9b6fa2d9d3f923eda0e7cb42b5b0a7"
+dependencies = [
+ "libshimmer",
+ "ratatui-core",
 ]
 
 [[package]]
@@ -562,6 +571,7 @@ dependencies = [
  "color-eyre",
  "crossterm",
  "libshimmer",
+ "libshimmer-ratatui",
  "ratatui",
  "regex",
  "rustix",
