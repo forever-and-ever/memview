@@ -14,7 +14,7 @@ version.workspace = true
 clap = { version = "4.6.1", features = ["derive"] }
 color-eyre = "0.6.5"
 crossterm = "0.29.0"
-libshimmer = "1.0.0"
+libshimmer = "1.0.1"
 libshimmer-ratatui = "0.1.0"
 ratatui = { version = "0.30.2", default-features = false, features = [
   "crossterm",
