@@ -58,13 +58,14 @@ pub struct Activity {
 }
 
 impl Activity {
-    /// A shimmer of a random stock recipe that the base glyphs draw. memview scans as fast as it
-    /// can, so it works briskly whenever a scan runs.
+    /// A shimmer of a random stock recipe that the base glyphs draw and that does not listen, as
+    /// memview hears nothing. memview scans as fast as it can, so it works briskly whenever a scan
+    /// runs.
     pub fn summon(now: Instant) -> Result<Self> {
         let seed = RandomState::new().hash_one(());
         let fitting: Vec<&'static Recipe> = stock::ROSTER
             .iter()
-            .filter(|recipe| recipe.fits(GLYPHS).is_ok())
+            .filter(|recipe| recipe.fits(GLYPHS).is_ok() && !recipe.listens())
             .collect();
         let recipe = seed
             .checked_rem(u64::try_from(fitting.len())?)
