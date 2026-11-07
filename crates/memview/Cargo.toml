@@ -6,7 +6,7 @@ keywords = ["linux", "memory", "procfs", "tmpfs", "tui"]
 categories = ["command-line-utilities"]
 license.workspace = true
 readme = "../../README.md"
-repository = "https://github.com/aoaoaoaoaoaoaoaoaoaoaoaoaoaoaoaoaoaoaoa/memview"
+repository = "https://github.com/forever-and-ever/memview"
 rust-version.workspace = true
 version.workspace = true
 

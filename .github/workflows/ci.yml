@@ -18,4 +18,4 @@ jobs:
     # job inside the workflow runs read-only.
     permissions:
       contents: write
-    uses: aoaoaoaoaoaoaoaoaoaoaoaoaoaoaoaoaoaoaoa/eternalist-foundry/.github/workflows/pipeline.yml@fleet
+    uses: forever-and-ever/eternalist-foundry/.github/workflows/pipeline.yml@fleet
