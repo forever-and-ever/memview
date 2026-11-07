@@ -576,6 +576,7 @@ dependencies = [
  "regex",
  "rustix",
  "signal-hook 0.4.4",
+ "tui-eternal",
  "uzers",
  "walkdir",
 ]
@@ -1131,6 +1132,18 @@ dependencies = [
 ]
 
 [[package]]
+name = "tui-eternal"
+version = "0.1.0"
+source = "registry+https://github.com/rust-lang/crates.io-index"
+checksum = "340442acb7f18bb2a3a0dc5a60af1a01d4ea4d9db539614d00b1db495ff5dcac"
+dependencies = [
+ "crossterm",
+ "libshimmer",
+ "ratatui",
+ "unicode-width",
+]
+
+[[package]]
 name = "unicode-ident"
 version = "1.0.24"
 source = "registry+https://github.com/rust-lang/crates.io-index"
@@ -1155,9 +1168,9 @@ dependencies = [
 
 [[package]]
 name = "unicode-width"
-version = "0.2.2"
+version = "0.2.3"
 source = "registry+https://github.com/rust-lang/crates.io-index"
-checksum = "b4ac048d71ede7ee76d585517add45da530660ef4390e49b098733c6e897f254"
+checksum = "ca718471876992059f251e33aafc334346ada08042b7661dd1fe313a9bced557"
 
 [[package]]
 name = "utf8parse"

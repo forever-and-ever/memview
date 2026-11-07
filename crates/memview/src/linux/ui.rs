@@ -1,12 +1,11 @@
 use super::activity::Activity;
-use super::app::{App, Binding, FlatProcessRow, FlatSharedRow, FlatTmpfsRow, RowFold};
+use super::app::{App, FlatProcessRow, FlatSharedRow, FlatTmpfsRow, RowFold};
 use super::model::{
     Bytes, Meminfo, MeminfoEntry, NvidiaPoolLedger, ObjectUsage, PhysicalResidual, Pid,
     ProcessCoverage, ProcessMemory, ProcessTotals, Processes, Shared, TmpfsMount,
 };
-use super::nav::FooterHint;
 use super::search::SearchRole;
-use libshimmer::{Motion, Palette};
+use libshimmer::Motion;
 use libshimmer_ratatui::RowExt as _;
 use ratatui::Frame;
 use ratatui::layout::{Constraint, Direction, Layout, Rect};
@@ -15,16 +14,8 @@ use ratatui::text::{Line, Span};
 use ratatui::widgets::{Block, Borders, Cell, Clear, Paragraph, Row, Table, Wrap};
 use std::borrow::Cow;
 use std::time::Duration;
-
-const BG_RGB: (u8, u8, u8) = (12, 17, 24);
-const FG_RGB: (u8, u8, u8) = (221, 227, 234);
-const BG: Color = Color::Rgb(BG_RGB.0, BG_RGB.1, BG_RGB.2);
-const FG: Color = Color::Rgb(FG_RGB.0, FG_RGB.1, FG_RGB.2);
-const MUTED: Color = Color::Rgb(129, 145, 160);
-const ACCENT: Color = Color::Rgb(64, 184, 173);
-const HOT: Color = Color::Rgb(227, 116, 94);
-const GOLD: Color = Color::Rgb(236, 180, 71);
-const FOOTER_KEY: Color = Color::Rgb(211, 218, 226);
+use tui_eternal::palette::{ACCENT, BG, CURSOR, FG, GOLD, HOT, MUTED, PAGE, SHIMMER};
+use tui_eternal::{badge, legend, masthead, panel, tally};
 
 pub fn render(frame: &mut Frame<'_>, app: &App, activity: &Activity) {
     let area = frame.area();
@@ -46,8 +37,8 @@ pub fn render(frame: &mut Frame<'_>, app: &App, activity: &Activity) {
     }
     frame.render_widget(footer(app), chunks[2]);
 
-    if app.help_open() {
-        render_help(frame, app, area);
+    if let Some(help) = app.help() {
+        help.render(frame, &app.sections(), NOTES);
     }
     if app.kill_confirmation().is_some() {
         render_kill_confirmation(frame, app, area);
@@ -68,49 +59,35 @@ fn render_body(frame: &mut Frame<'_>, app: &App, area: Rect) {
 
 fn header(app: &App) -> Paragraph<'static> {
     Paragraph::new(header_line(app))
-        .block(panel("Memory Ledger"))
-        .style(Style::default().fg(FG).bg(BG))
+        .block(masthead())
+        .style(PAGE)
 }
 
 fn header_line(app: &App) -> Line<'static> {
     let mut spans = Vec::new();
-    spans.push(Span::styled(
-        " memview ",
-        Style::default()
-            .fg(BG)
-            .bg(ACCENT)
-            .add_modifier(Modifier::BOLD),
-    ));
+    spans.push(badge("memview"));
     spans.push(Span::raw("  "));
     for (index, label) in App::tab_labels().into_iter().enumerate() {
         let style = if app.tab == super::app::Tab::ALL[index] {
-            Style::default().fg(ACCENT).add_modifier(Modifier::BOLD)
+            ACCENT.fg().add_modifier(Modifier::BOLD)
         } else {
-            Style::default().fg(MUTED)
+            MUTED.fg()
         };
         spans.push(Span::styled(label, style));
         spans.push(Span::raw("  "));
     }
     spans.push(Span::styled(
         format!("sort {}", app.metric.label()),
-        Style::default().fg(GOLD),
+        GOLD.fg(),
     ));
     if matches!(app.tab, super::app::Tab::Processes | super::app::Tab::Tmpfs) {
         spans.push(Span::raw("  "));
         spans.push(Span::styled(
             format!("mode {}", app.tree_scope.label()),
-            Style::default().fg(ACCENT),
+            ACCENT.fg(),
         ));
     }
     Line::from(spans)
-}
-
-/// memview's own colors, against which the activity shimmer blends.
-fn palette() -> Palette {
-    Palette {
-        fg: FG_RGB.into(),
-        bg: BG_RGB.into(),
-    }
 }
 
 /// The activity readout, right-aligned in the header bar: the scan under way, dressed by the
@@ -120,7 +97,7 @@ fn render_activity(frame: &mut Frame<'_>, app: &App, activity: &Activity, area: 
         return;
     };
     let row = activity.shimmer().status(
-        palette(),
+        SHIMMER,
         Motion {
             mark: true,
             letters: true,
@@ -129,10 +106,10 @@ fn render_activity(frame: &mut Frame<'_>, app: &App, activity: &Activity, area: 
     let mut spans = row.spans();
     spans.push(Span::styled(
         format!("  {} ms", running.as_millis()),
-        Style::default().fg(MUTED),
+        MUTED.fg(),
     ));
     let line = Line::from(spans);
-    let bar = Block::default().borders(Borders::ALL).inner(area);
+    let bar = masthead().inner(area);
     let width = u16::try_from(line.width()).unwrap_or(u16::MAX);
     let taken = u16::try_from(header_line(app).width()).unwrap_or(u16::MAX);
     if taken.saturating_add(2).saturating_add(width) > bar.width {
@@ -143,10 +120,7 @@ fn render_activity(frame: &mut Frame<'_>, app: &App, activity: &Activity, area: 
         width,
         ..bar
     };
-    frame.render_widget(
-        Paragraph::new(line).style(Style::default().fg(FG).bg(BG)),
-        lead,
-    );
+    frame.render_widget(Paragraph::new(line).style(PAGE), lead);
     row.shade(lead, frame.buffer_mut());
 }
 
@@ -160,42 +134,28 @@ fn footer(app: &App) -> Paragraph<'_> {
                 super::app::RefreshPause::Inactive => "PAUSED · idle · press a key to resume  ",
                 super::app::RefreshPause::Unfocused => "PAUSED · terminal unfocused  ",
             },
-            Style::default().fg(GOLD),
+            GOLD.fg(),
         ));
     }
     if let Some(pattern) = app.search_pattern() {
         spans.push(Span::styled(
             format!(" FILTER /{pattern}/ "),
-            Style::default()
-                .fg(BG)
-                .bg(GOLD)
-                .add_modifier(Modifier::BOLD),
+            BG.fg().bg(GOLD.color()).add_modifier(Modifier::BOLD),
         ));
         spans.push(Span::raw(" "));
     }
-    let bindings = app.binding_sections();
-    for hint in bindings
-        .global
-        .iter()
-        .chain(bindings.navigation)
-        .chain(bindings.pane)
-        .filter_map(|binding| binding.footer)
-    {
-        push_footer_hint(&mut spans, hint);
-    }
-    spans.push(Span::styled(
-        app.current_time_label(),
-        Style::default().fg(MUTED),
-    ));
+    spans.extend(legend(&app.sections()));
+    spans.push(Span::raw("  "));
+    spans.push(Span::styled(app.current_time_label(), MUTED.fg()));
     if let Some(error) = &app.last_error {
-        spans.push(Span::styled("  last error: ", Style::default().fg(HOT)));
-        spans.push(Span::styled(error.as_str(), Style::default().fg(HOT)));
+        spans.push(Span::styled("  last error: ", HOT.fg()));
+        spans.push(Span::styled(error.as_str(), HOT.fg()));
     }
     if let Some(confirmation) = app.kill_confirmation() {
         if confirmation.armed() {
             spans.push(Span::styled(
                 "  SIGTERM armed: y confirms",
-                Style::default().fg(HOT).add_modifier(Modifier::BOLD),
+                HOT.fg().add_modifier(Modifier::BOLD),
             ));
         } else {
             spans.push(Span::styled(
@@ -203,20 +163,13 @@ fn footer(app: &App) -> Paragraph<'_> {
                     "  SIGTERM locked {} ms",
                     confirmation.lock_remaining().as_millis()
                 ),
-                Style::default().fg(GOLD),
+                GOLD.fg(),
             ));
         }
     }
     Paragraph::new(Line::from(spans))
         .wrap(Wrap { trim: false })
-        .style(Style::default().bg(BG))
-}
-
-fn push_footer_hint(spans: &mut Vec<Span<'_>>, hint: FooterHint) {
-    spans.push(Span::styled(hint.key, Style::default().fg(FOOTER_KEY)));
-    spans.push(Span::raw(" "));
-    spans.push(Span::styled(hint.action, Style::default().fg(MUTED)));
-    spans.push(Span::raw("  "));
+        .style(BG.bg())
 }
 
 fn render_loading(frame: &mut Frame<'_>, app: &App, area: Rect) {
@@ -228,8 +181,8 @@ fn render_loading(frame: &mut Frame<'_>, app: &App, area: Rect) {
     };
     frame.render_widget(
         Paragraph::new(message)
-            .block(panel(title))
-            .style(Style::default().fg(FG)),
+            .block(panel(title, false))
+            .style(FG.fg()),
         area,
     );
 }
@@ -267,7 +220,7 @@ fn render_overview(frame: &mut Frame<'_>, app: &App, area: Rect) {
             ],
         )
         .header(header_row(["Kernel Counter", "Value", "% total"]))
-        .block(panel("meminfo"))
+        .block(panel("meminfo", false))
         .column_spacing(1),
         columns[0],
     );
@@ -333,7 +286,7 @@ fn render_overview(frame: &mut Frame<'_>, app: &App, area: Rect) {
             [Constraint::Length(24), Constraint::Length(16)],
         )
         .header(header_row(["Physical ledger", "Value"]))
-        .block(panel("RAM reconciliation"))
+        .block(panel("RAM reconciliation", false))
         .column_spacing(1),
         right[0],
     );
@@ -396,7 +349,7 @@ fn render_overview(frame: &mut Frame<'_>, app: &App, area: Rect) {
             [Constraint::Length(24), Constraint::Length(16)],
         )
         .header(header_row(["Lens", "Value"]))
-        .block(panel("independent attribution captures"))
+        .block(panel("independent attribution captures", false))
         .column_spacing(1),
         right[1],
     );
@@ -420,20 +373,20 @@ fn render_overview(frame: &mut Frame<'_>, app: &App, area: Rect) {
                 process_coverage.inaccessible_maps,
                 process_coverage.deferred_maps,
             ),
-            Style::default().fg(FG),
+            FG.fg(),
         ))]
     } else {
         warnings
             .iter()
             .take(24)
-            .map(|warning| Line::from(Span::styled(*warning, Style::default().fg(HOT))))
+            .map(|warning| Line::from(Span::styled(*warning, HOT.fg())))
             .collect::<Vec<_>>()
     };
     frame.render_widget(
         Paragraph::new(warning_lines)
-            .block(panel("probe notes"))
+            .block(panel("probe notes", false))
             .wrap(Wrap { trim: false })
-            .style(Style::default().fg(FG)),
+            .style(FG.fg()),
         right[2],
     );
 }
@@ -456,15 +409,15 @@ fn render_processes(frame: &mut Frame<'_>, app: &App, area: Rect) {
     if processes.tree.nodes.is_empty() && app.process_scan_started_at.is_some() {
         frame.render_widget(
             Paragraph::new("Capturing process memory snapshot...")
-                .block(panel("process tree"))
-                .style(Style::default().fg(FG)),
+                .block(panel("process tree", true))
+                .style(FG.fg()),
             columns[0],
         );
         frame.render_widget(
             Paragraph::new("Per-process PSS, mappings, and object consumers will appear here.")
-                .block(panel("selected process"))
+                .block(panel("selected process", false))
                 .wrap(Wrap { trim: false })
-                .style(Style::default().fg(MUTED)),
+                .style(MUTED.fg()),
             right[0],
         );
         return;
@@ -502,7 +455,7 @@ fn render_processes(frame: &mut Frame<'_>, app: &App, area: Rect) {
         .header(header_row([
             "Task", "PID", "User", "PSS", "USS", "RSS", "Command",
         ]))
-        .block(panel(format!("process tree ({})", app.tree_scope.label())))
+        .block(panel("process tree", true).title(tally(app.tree_scope.label())))
         .column_spacing(1),
         columns[0],
     );
@@ -511,7 +464,7 @@ fn render_processes(frame: &mut Frame<'_>, app: &App, area: Rect) {
         let mut details = search_summary_lines(app, capacity);
         details.push(Line::from(vec![Span::styled(
             process.title(),
-            Style::default().fg(ACCENT).add_modifier(Modifier::BOLD),
+            ACCENT.fg().add_modifier(Modifier::BOLD),
         )]));
         if let Some(cwd) = &process.cwd {
             details.push(detail_line("CWD", cwd.as_str()));
@@ -552,17 +505,17 @@ fn render_processes(frame: &mut Frame<'_>, app: &App, area: Rect) {
         ]);
         frame.render_widget(
             Paragraph::new(details)
-                .block(panel("selected process"))
+                .block(panel("selected process", false))
                 .wrap(Wrap { trim: false })
-                .style(Style::default().fg(FG)),
+                .style(FG.fg()),
             right[0],
         );
     } else if app.search_summary().is_some() {
         frame.render_widget(
             Paragraph::new(search_summary_lines(app, capacity))
-                .block(panel("search total"))
+                .block(panel("search total", false))
                 .wrap(Wrap { trim: false })
-                .style(Style::default().fg(FG)),
+                .style(FG.fg()),
             right[0],
         );
     }
@@ -588,7 +541,7 @@ fn render_processes(frame: &mut Frame<'_>, app: &App, area: Rect) {
                 ],
             )
             .header(header_row(["Kind", "PSS", "RSS", "VMAs", "Object"]))
-            .block(panel("selected mappings"))
+            .block(panel("selected mappings", false))
             .column_spacing(1),
             right[1],
         );
@@ -600,22 +553,19 @@ fn mapping_loading(pid: Pid, elapsed: Duration) -> Paragraph<'static> {
     Paragraph::new(vec![
         Line::from(vec![Span::styled(
             format!("Loading /proc/{pid}/smaps{dots}"),
-            Style::default().fg(GOLD).add_modifier(Modifier::BOLD),
+            GOLD.fg().add_modifier(Modifier::BOLD),
         )]),
         Line::from(""),
         Line::from(vec![
-            Span::styled("elapsed ", Style::default().fg(MUTED)),
-            Span::styled(
-                format!("{} ms", elapsed.as_millis()),
-                Style::default().fg(FG),
-            ),
+            Span::styled("elapsed ", MUTED.fg()),
+            Span::styled(format!("{} ms", elapsed.as_millis()), FG.fg()),
         ]),
         Line::from(""),
         Line::from("The kernel synthesizes per-VMA PSS/RSS here; large mapping tables can stall."),
     ])
-    .block(panel("selected mappings"))
+    .block(panel("selected mappings", false))
     .wrap(Wrap { trim: false })
-    .style(Style::default().fg(FG))
+    .style(FG.fg())
 }
 
 fn render_tmpfs(frame: &mut Frame<'_>, app: &App, area: Rect) {
@@ -657,12 +607,12 @@ fn render_tmpfs(frame: &mut Frame<'_>, app: &App, area: Rect) {
             "Logical",
             "Path",
         ]))
-        .block(panel(format!(
-            "tmpfs generation ({}/{} filesystems; {} walk gaps)",
+        .block(panel("tmpfs generation", true).title(tally(&format!(
+            "{}/{} filesystems; {} walk gaps",
             tmpfs.coverage.captured_filesystems,
             tmpfs.coverage.unique_filesystems,
             tmpfs.coverage.walk_errors
-        )))
+        ))))
         .column_spacing(1),
         columns[0],
     );
@@ -676,9 +626,9 @@ fn render_tmpfs(frame: &mut Frame<'_>, app: &App, area: Rect) {
     );
     frame.render_widget(
         Paragraph::new(detail_lines)
-            .block(panel("selected tmpfs entry"))
+            .block(panel("selected tmpfs entry", false))
             .wrap(Wrap { trim: false })
-            .style(Style::default().fg(FG)),
+            .style(FG.fg()),
         columns[1],
     );
 }
@@ -724,10 +674,10 @@ fn render_shared(frame: &mut Frame<'_>, app: &App, area: Rect) {
         .header(header_row([
             "Kind", "Tasks", "PSS", "RSS", "VMAs", "Object",
         ]))
-        .block(panel(format!(
-            "backing ledger ({}/{} maps exact)",
+        .block(panel("backing ledger", true).title(tally(&format!(
+            "{}/{} maps exact",
             shared.coverage.exact_maps, shared.coverage.captured
-        )))
+        ))))
         .column_spacing(1),
         columns[0],
     );
@@ -741,7 +691,7 @@ fn render_shared(frame: &mut Frame<'_>, app: &App, area: Rect) {
         summary.extend([
             Line::from(Span::styled(
                 object.label.as_str(),
-                Style::default().fg(ACCENT).add_modifier(Modifier::BOLD),
+                ACCENT.fg().add_modifier(Modifier::BOLD),
             )),
             detail_line("Kind", object.kind.label()),
             detail_line("Backing", object.backing.to_string()),
@@ -753,9 +703,9 @@ fn render_shared(frame: &mut Frame<'_>, app: &App, area: Rect) {
         ]);
         frame.render_widget(
             Paragraph::new(summary)
-                .block(panel("selected object"))
+                .block(panel("selected object", false))
                 .wrap(Wrap { trim: false })
-                .style(Style::default().fg(FG)),
+                .style(FG.fg()),
             right[0],
         );
 
@@ -789,16 +739,16 @@ fn render_shared(frame: &mut Frame<'_>, app: &App, area: Rect) {
                 ],
             )
             .header(header_row(["PID", "PSS", "RSS", "Name", "Command"]))
-            .block(panel("top consumers"))
+            .block(panel("top consumers", false))
             .column_spacing(1),
             right[1],
         );
     } else if app.search_summary().is_some() {
         frame.render_widget(
             Paragraph::new(search_summary_lines(app, capacity))
-                .block(panel("search total"))
+                .block(panel("search total", false))
                 .wrap(Wrap { trim: false })
-                .style(Style::default().fg(FG)),
+                .style(FG.fg()),
             right[0],
         );
     }
@@ -818,9 +768,9 @@ fn row_meminfo<'a>(entry: &'a MeminfoEntry, meminfo: &Meminfo) -> Row<'a> {
 fn summary_row(label: &str, value: Bytes) -> Row<'static> {
     Row::new(vec![
         Cell::from(label.to_string()),
-        Cell::from(value.human_iec()).style(Style::default().fg(FG)),
+        Cell::from(value.human_iec()).style(FG.fg()),
     ])
-    .style(Style::default().fg(FG))
+    .style(FG.fg())
 }
 
 fn accounting_row(label: &str, value: Bytes, total: Bytes) -> Row<'static> {
@@ -828,7 +778,7 @@ fn accounting_row(label: &str, value: Bytes, total: Bytes) -> Row<'static> {
         Cell::from(label.to_string()),
         usage_cell(value, total),
     ])
-    .style(Style::default().fg(FG))
+    .style(FG.fg())
 }
 
 fn summary_text_row(label: &str, value: &str) -> Row<'static> {
@@ -946,7 +896,7 @@ fn tmpfs_detail_lines<'a>(
     let mut lines = vec![
         Line::from(Span::styled(
             node.path.to_string_lossy(),
-            Style::default().fg(ACCENT).add_modifier(Modifier::BOLD),
+            ACCENT.fg().add_modifier(Modifier::BOLD),
         )),
         detail_line("Mount", mount.mount_point.to_string_lossy()),
         detail_line("Source", mount.source.as_str()),
@@ -972,7 +922,7 @@ fn search_summary_lines(app: &App, capacity: Bytes) -> Vec<Line<'_>> {
     let mut lines = vec![
         Line::from(Span::styled(
             "regexp matches",
-            Style::default().fg(GOLD).add_modifier(Modifier::BOLD),
+            GOLD.fg().add_modifier(Modifier::BOLD),
         )),
         detail_line("regexp", format!("/{pattern}/")),
         detail_line("matches", summary.matches.to_string()),
@@ -991,14 +941,13 @@ fn search_summary_lines(app: &App, capacity: Bytes) -> Vec<Line<'_>> {
 
 fn detail_line<'a>(label: &str, value: impl Into<Cow<'a, str>>) -> Line<'a> {
     Line::from(vec![
-        Span::styled(format!("{label:>12} "), Style::default().fg(MUTED)),
-        Span::styled(value.into(), Style::default().fg(FG)),
+        Span::styled(format!("{label:>12} "), MUTED.fg()),
+        Span::styled(value.into(), FG.fg()),
     ])
 }
 
 fn header_row<const N: usize>(values: [&'static str; N]) -> Row<'static> {
-    Row::new(values.into_iter().map(Cell::from))
-        .style(Style::default().fg(GOLD).add_modifier(Modifier::BOLD))
+    Row::new(values.into_iter().map(Cell::from)).style(GOLD.fg().add_modifier(Modifier::BOLD))
 }
 
 fn usage_style(selected: bool, value: Bytes, total: Bytes) -> Style {
@@ -1007,7 +956,7 @@ fn usage_style(selected: bool, value: Bytes, total: Bytes) -> Style {
 
 fn usage_style_for_role(selected: bool, value: Bytes, total: Bytes, role: SearchRole) -> Style {
     if role.is_context() && !selected {
-        Style::default().fg(MUTED)
+        MUTED.fg()
     } else {
         usage_style(selected, value, total)
     }
@@ -1017,7 +966,7 @@ fn row_fg_style(selected: bool, fg: Color) -> Style {
     if selected {
         Style::default()
             .fg(fg)
-            .bg(Color::Rgb(28, 44, 61))
+            .bg(CURSOR.color())
             .add_modifier(Modifier::BOLD)
     } else {
         Style::default().fg(fg)
@@ -1068,20 +1017,24 @@ impl MeminfoTone {
 }
 
 fn neutral_meminfo_color(value: Bytes) -> Color {
-    if value.0 == 0 { MUTED } else { FG }
+    if value.0 == 0 {
+        MUTED.color()
+    } else {
+        FG.color()
+    }
 }
 
 fn reserve_color(value: Bytes, total: Bytes) -> Color {
     if value.0 == 0 || total.0 == 0 {
-        return MUTED;
+        return MUTED.color();
     }
 
     let pct = (value.as_f64() / total.as_f64()).clamp(0.0, 1.0);
     if pct >= 0.10 {
-        return FG;
+        return FG.color();
     }
     if pct <= 0.03 {
-        return HOT;
+        return HOT.color();
     }
     blend_rgb((232, 58, 46), (246, 248, 250), (pct - 0.03) / 0.07)
 }
@@ -1100,101 +1053,19 @@ fn blend_channel(start: u8, end: u8, t: f64) -> u8 {
         .clamp(0.0, 255.0) as u8
 }
 
-fn panel<'a>(title: impl Into<Line<'a>>) -> Block<'a> {
-    Block::default()
-        .borders(Borders::ALL)
-        .title(title)
-        .style(Style::default().fg(FG).bg(BG))
-}
-
-fn render_help(frame: &mut Frame<'_>, app: &App, area: Rect) {
-    let popup = centered_rect(area, 92, 92);
-    frame.render_widget(Clear, popup);
-    let block = panel("Help");
-    let inner = block.inner(popup);
-    frame.render_widget(block, popup);
-    let sections = Layout::default()
-        .direction(Direction::Vertical)
-        .constraints([Constraint::Min(1), Constraint::Length(1)])
-        .split(inner);
-    let bindings = app.binding_sections();
-    let mut text = vec![
-        Line::from(Span::styled(
-            "memview keys",
-            Style::default().fg(ACCENT).add_modifier(Modifier::BOLD),
-        )),
-        Line::from(""),
-        section_heading("Global"),
-    ];
-    text.extend(bindings.global.iter().map(binding_line));
-    text.extend([
-        Line::from(""),
-        section_heading(&format!("Pane: {}", bindings.pane_title)),
-    ]);
-    text.extend(bindings.navigation.iter().map(binding_line));
-    text.extend(bindings.pane.iter().map(binding_line));
-    text.extend([
-        Line::from(""),
-        section_heading("Notes"),
-        Line::from(
-            "Overview estimates a physical-RAM counter partition; /proc/meminfo counters can \
-             overlap and omit subsystem ownership.",
-        ),
-        Line::from(
-            "NVIDIA system pools appear as an independent lens when shrinker debugfs is readable; \
-             they are not subtracted because the kernel snapshots can overlap or race.",
-        ),
-        Line::from(
-            "PSS lenses remain zero for tasks readable only through status RSS; coverage reports \
-             the degradation.",
-        ),
-        Line::from(
-            "Tmpfs uses allocated blocks, which is closer to actual backing than file length.",
-        ),
-        Line::from("Tree panes auto-fold subtrees below min(1% RAM, 3% largest non-root subtree)."),
-        Line::from(
-            "Shared aggregates mapped objects across visible tasks: tmpfs, memfd, SYSV, files, \
-             and anonymous regions.",
-        ),
-    ]);
-    let paragraph = Paragraph::new(text)
-        .wrap(Wrap { trim: false })
-        .style(Style::default().fg(FG));
-    let line_count = paragraph.line_count(sections[0].width);
-    let max_scroll = line_count
-        .saturating_sub(usize::from(sections[0].height))
-        .min(usize::from(u16::MAX)) as u16;
-    let scroll = app.help_scroll().min(max_scroll);
-    frame.render_widget(paragraph.scroll((scroll, 0)), sections[0]);
-    frame.render_widget(
-        Paragraph::new(Line::from(vec![
-            Span::styled("↑/↓ PgUp/PgDn Home/End", Style::default().fg(FOOTER_KEY)),
-            Span::raw(" scroll  "),
-            Span::styled("Esc/?", Style::default().fg(FOOTER_KEY)),
-            Span::raw(" close  "),
-            Span::styled(
-                format!(
-                    "line {}/{}",
-                    scroll.saturating_add(1),
-                    max_scroll.saturating_add(1)
-                ),
-                Style::default().fg(MUTED),
-            ),
-        ])),
-        sections[1],
-    );
-}
-
-fn section_heading(label: &str) -> Line<'static> {
-    Line::from(Span::styled(
-        label.to_string(),
-        Style::default().fg(GOLD).add_modifier(Modifier::BOLD),
-    ))
-}
-
-fn binding_line(binding: &Binding) -> Line<'static> {
-    detail_line(binding.key, binding.description)
-}
+/// What help adds to the bindings.
+const NOTES: &[&str] = &[
+    "Overview estimates a physical-RAM counter partition; /proc/meminfo counters can overlap and \
+     omit subsystem ownership.",
+    "NVIDIA system pools appear as an independent lens when shrinker debugfs is readable; they are \
+     not subtracted because the kernel snapshots can overlap or race.",
+    "PSS lenses remain zero for tasks readable only through status RSS; coverage reports the \
+     degradation.",
+    "Tmpfs uses allocated blocks, which is closer to actual backing than file length.",
+    "Tree panes auto-fold subtrees below min(1% RAM, 3% largest non-root subtree).",
+    "Shared aggregates mapped objects across visible tasks: tmpfs, memfd, SYSV, files, and \
+     anonymous regions.",
+];
 
 fn render_kill_confirmation(frame: &mut Frame<'_>, app: &App, area: Rect) {
     let Some(confirmation) = app.kill_confirmation() else {
@@ -1203,7 +1074,7 @@ fn render_kill_confirmation(frame: &mut Frame<'_>, app: &App, area: Rect) {
 
     let popup = centered_rect(area, 88, 88);
     frame.render_widget(Clear, popup);
-    let block = panel("kill");
+    let block = panel("kill", true);
     let inner = block.inner(popup);
     frame.render_widget(block, popup);
 
@@ -1219,16 +1090,13 @@ fn render_kill_confirmation(frame: &mut Frame<'_>, app: &App, area: Rect) {
     let top = vec![
         Line::from(Span::styled(
             "Send SIGTERM to this process?",
-            Style::default().fg(HOT).add_modifier(Modifier::BOLD),
+            HOT.fg().add_modifier(Modifier::BOLD),
         )),
         Line::from(""),
         detail_line("PID", confirmation.target.pid.to_string()),
         detail_line("Name", confirmation.target.name.as_str()),
     ];
-    frame.render_widget(
-        Paragraph::new(top).style(Style::default().fg(FG)),
-        sections[0],
-    );
+    frame.render_widget(Paragraph::new(top).style(FG.fg()), sections[0]);
 
     frame.render_widget(
         Paragraph::new(confirmation.target.cli())
@@ -1236,10 +1104,10 @@ fn render_kill_confirmation(frame: &mut Frame<'_>, app: &App, area: Rect) {
                 Block::default()
                     .borders(Borders::TOP | Borders::BOTTOM)
                     .title("Full CLI")
-                    .style(Style::default().fg(ACCENT).bg(BG)),
+                    .style(ACCENT.fg().bg(BG.color())),
             )
             .wrap(Wrap { trim: false })
-            .style(Style::default().fg(FG).bg(BG)),
+            .style(PAGE),
         sections[1],
     );
 
@@ -1247,7 +1115,7 @@ fn render_kill_confirmation(frame: &mut Frame<'_>, app: &App, area: Rect) {
     if confirmation.armed() {
         controls.push(Line::from(Span::styled(
             "press y to send SIGTERM",
-            Style::default().fg(HOT).add_modifier(Modifier::BOLD),
+            HOT.fg().add_modifier(Modifier::BOLD),
         )));
     } else {
         controls.push(detail_line(
@@ -1263,7 +1131,7 @@ fn render_kill_confirmation(frame: &mut Frame<'_>, app: &App, area: Rect) {
     frame.render_widget(
         Paragraph::new(controls)
             .wrap(Wrap { trim: false })
-            .style(Style::default().fg(FG).bg(BG)),
+            .style(PAGE),
         sections[2],
     );
 }
@@ -1278,12 +1146,12 @@ fn render_search_prompt(frame: &mut Frame<'_>, app: &App, area: Rect) {
     let mut lines = vec![
         Line::from(Span::styled(
             "Filter rows by regexp",
-            Style::default().fg(ACCENT).add_modifier(Modifier::BOLD),
+            ACCENT.fg().add_modifier(Modifier::BOLD),
         )),
         Line::from(""),
         Line::from(vec![
-            Span::styled("/", Style::default().fg(GOLD)),
-            Span::styled(draft.input().to_string(), Style::default().fg(FG)),
+            Span::styled("/", GOLD.fg()),
+            Span::styled(draft.input().to_string(), FG.fg()),
         ]),
         Line::from(""),
         detail_line("accept", "Enter"),
@@ -1295,9 +1163,9 @@ fn render_search_prompt(frame: &mut Frame<'_>, app: &App, area: Rect) {
     }
     frame.render_widget(
         Paragraph::new(lines)
-            .block(panel("search"))
+            .block(panel("search", true))
             .wrap(Wrap { trim: false })
-            .style(Style::default().fg(FG)),
+            .style(FG.fg()),
         popup,
     );
 }
@@ -1356,12 +1224,7 @@ fn slice_window<T>(items: &[T], selected: usize, height: usize) -> SliceWindow<'
 
 #[cfg(test)]
 mod tests {
-    use super::super::app::{UiState, WorkerPort};
     use super::*;
-    use crossterm::event::{KeyCode, KeyEvent, KeyModifiers};
-    use ratatui::Terminal;
-    use ratatui::backend::TestBackend;
-    use std::sync::mpsc;
 
     fn meminfo(total: Bytes) -> Meminfo {
         Meminfo {
@@ -1381,10 +1244,13 @@ mod tests {
         assert_eq!(MeminfoTone::for_key("SwapFree"), MeminfoTone::Neutral);
         assert_eq!(MeminfoTone::for_key("MemAvailable"), MeminfoTone::Reserve);
 
-        assert_eq!(MeminfoTone::Neutral.color(Bytes(100), &meminfo), FG);
-        assert_eq!(MeminfoTone::Neutral.color(Bytes(0), &meminfo), MUTED);
-        assert_eq!(MeminfoTone::Reserve.color(Bytes(40), &meminfo), FG);
-        assert_eq!(MeminfoTone::Reserve.color(Bytes(2), &meminfo), HOT);
+        assert_eq!(MeminfoTone::Neutral.color(Bytes(100), &meminfo), FG.color());
+        assert_eq!(
+            MeminfoTone::Neutral.color(Bytes(0), &meminfo),
+            MUTED.color()
+        );
+        assert_eq!(MeminfoTone::Reserve.color(Bytes(40), &meminfo), FG.color());
+        assert_eq!(MeminfoTone::Reserve.color(Bytes(2), &meminfo), HOT.color());
     }
 
     #[test]
@@ -1398,40 +1264,5 @@ mod tests {
             MeminfoTone::Pressure.color(Bytes(0), &meminfo),
             usage_color(Bytes(0), Bytes(100))
         );
-    }
-
-    #[test]
-    fn ordinary_terminal_help_reaches_every_note() {
-        let (requests, _events) = mpsc::channel();
-        let commands = WorkerPort::process_harness(requests);
-        let mut app = App::new(UiState::default());
-        let mut terminal = Terminal::new(TestBackend::new(80, 24)).expect("test terminal");
-        let activity = Activity::summon(std::time::Instant::now()).expect("activity shimmer");
-        app.handle_key(
-            KeyEvent::new(KeyCode::Char('?'), KeyModifiers::NONE),
-            &commands,
-        );
-        terminal
-            .draw(|frame| render(frame, &app, &activity))
-            .expect("render help start");
-        assert!(buffer_text(terminal.backend().buffer()).contains("Global"));
-
-        app.handle_key(KeyEvent::new(KeyCode::End, KeyModifiers::NONE), &commands);
-        terminal
-            .draw(|frame| render(frame, &app, &activity))
-            .expect("render help end");
-        let text = buffer_text(terminal.backend().buffer());
-        assert!(text.contains("anonymous regions"));
-        assert!(text.contains("Home/End"));
-    }
-
-    fn buffer_text(buffer: &ratatui::buffer::Buffer) -> String {
-        let width = usize::from(buffer.area.width);
-        buffer
-            .content()
-            .chunks(width)
-            .map(|row| row.iter().map(|cell| cell.symbol()).collect::<String>())
-            .collect::<Vec<_>>()
-            .join("\n")
     }
 }

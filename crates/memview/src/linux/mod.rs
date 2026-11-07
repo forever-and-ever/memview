@@ -11,23 +11,14 @@ use activity::Activity;
 use app::{App, spawn_worker};
 use clap::Parser;
 use color_eyre::eyre::{Result, ensure};
-use crossterm::cursor::{Hide, Show};
-use crossterm::event::{
-    self, DisableFocusChange, DisableMouseCapture, EnableFocusChange, EnableMouseCapture, Event,
-    KeyEventKind, MouseEventKind,
-};
-use crossterm::execute;
-use crossterm::terminal::{
-    EnterAlternateScreen, LeaveAlternateScreen, disable_raw_mode, enable_raw_mode,
-};
+use crossterm::event::{self, Event, KeyEventKind, MouseEventKind};
 use libshimmer::TICK;
-use ratatui::Terminal;
-use ratatui::backend::CrosstermBackend;
 use state::UiStateStore;
-use std::io::{self, IsTerminal, Stdout};
+use std::io::{self, IsTerminal};
 use std::sync::Arc;
 use std::sync::atomic::{AtomicUsize, Ordering};
 use std::time::{Duration, Instant};
+use tui_eternal::{Reports, Screen};
 
 const FOCUSED_IDLE_POLL: Duration = Duration::from_millis(500);
 const BACKGROUND_IDLE_POLL: Duration = Duration::from_secs(1);
@@ -54,13 +45,17 @@ pub fn run() -> MainResult {
     let termination = TerminationFlag::install()?;
     let (commands, events) = spawn_worker(Duration::from_millis(cli.refresh_ms));
     let mut state_store = UiStateStore::discover();
-    let mut terminal = TerminalGuard::enter()?;
+    let mut screen = Screen::open(Reports {
+        mouse: true,
+        focus: true,
+        paste: false,
+    })?;
     let mut app = App::new(state_store.restored());
     app.last_error = state_store.take_warning();
     if let Some(warning) = state_store.sync(app.ui_state()) {
         app.last_error = Some(warning);
     }
-    app.set_terminal_height(terminal.height()?);
+    app.set_terminal_height(screen.size()?.height);
     app.start_visible_work(&commands);
     let mut activity = Activity::summon(Instant::now())?;
     let mut dirty = true;
@@ -79,7 +74,7 @@ pub fn run() -> MainResult {
         let now = Instant::now();
         let redraw_animation = app.needs_periodic_redraw() && now >= next_animated_redraw;
         if app.is_focused() && (dirty || redraw_animation) {
-            draw(&mut terminal, &app, &mut activity)?;
+            draw(&mut screen, &app, &mut activity)?;
             dirty = false;
             next_animated_redraw = Instant::now() + ANIMATED_REDRAW;
         }
@@ -129,7 +124,7 @@ pub fn run() -> MainResult {
                     app.set_focused(false, &commands);
                     // The terminal may remain visible after losing focus. Paint
                     // the pause reason once, then leave its contents untouched.
-                    draw(&mut terminal, &app, &mut activity)?;
+                    draw(&mut screen, &app, &mut activity)?;
                     dirty = false;
                 }
                 Event::Paste(_) => {}
@@ -138,7 +133,7 @@ pub fn run() -> MainResult {
     };
 
     commands.shutdown();
-    drop(terminal);
+    drop(screen);
     if let Some(signal) = termination_signal {
         std::process::exit(128 + signal);
     }
@@ -173,9 +168,10 @@ impl TerminationFlag {
 }
 
 /// Advances the activity shimmer to now and draws a frame.
-fn draw(terminal: &mut TerminalGuard, app: &App, activity: &mut Activity) -> Result<()> {
+fn draw(screen: &mut Screen, app: &App, activity: &mut Activity) -> Result<()> {
     activity.follow(app, Instant::now());
-    terminal.draw(|frame| ui::render(frame, app, activity))
+    screen.draw(|frame| ui::render(frame, app, activity))?;
+    Ok(())
 }
 
 fn poll_timeout(app: &App, next_animated_redraw: Instant) -> Duration {
@@ -186,58 +182,5 @@ fn poll_timeout(app: &App, next_animated_redraw: Instant) -> Duration {
         FOCUSED_IDLE_POLL.min(next_animated_redraw.saturating_duration_since(Instant::now()))
     } else {
         FOCUSED_IDLE_POLL
-    }
-}
-
-struct TerminalGuard {
-    terminal: Terminal<CrosstermBackend<Stdout>>,
-    _restore: TerminalState,
-}
-
-struct TerminalState;
-
-impl TerminalGuard {
-    fn enter() -> Result<Self> {
-        enable_raw_mode()?;
-        let restore = TerminalState;
-        let mut stdout = io::stdout();
-        execute!(
-            stdout,
-            EnterAlternateScreen,
-            EnableMouseCapture,
-            EnableFocusChange,
-            Hide
-        )?;
-        let backend = CrosstermBackend::new(stdout);
-        let terminal = Terminal::new(backend)?;
-        Ok(Self {
-            terminal,
-            _restore: restore,
-        })
-    }
-
-    fn draw<F>(&mut self, draw: F) -> Result<()>
-    where
-        F: FnOnce(&mut ratatui::Frame<'_>),
-    {
-        self.terminal.draw(draw)?;
-        Ok(())
-    }
-
-    fn height(&self) -> Result<u16> {
-        Ok(self.terminal.size()?.height)
-    }
-}
-
-impl Drop for TerminalState {
-    fn drop(&mut self) {
-        let _ = execute!(
-            io::stdout(),
-            Show,
-            DisableFocusChange,
-            DisableMouseCapture,
-            LeaveAlternateScreen
-        );
-        let _ = disable_raw_mode();
     }
 }

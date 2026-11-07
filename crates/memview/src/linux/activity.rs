@@ -1,16 +1,12 @@
 //! The activity readout's animation: a stock shimmer dressing the scan under way.
 
-use std::hash::{BuildHasher, RandomState};
 use std::time::{Duration, Instant};
 
 use color_eyre::eyre::{Result, eyre};
-use libshimmer::{Glyphs, Intensity, Recipe, Shimmer, Spell, stock};
+use libshimmer::{Intensity, Shimmer, Spell};
+use tui_eternal::Ember;
 
 use super::app::App;
-
-/// The glyph repertoires memview assumes: none beyond the base set, since it cannot tell which
-/// glyphs its terminal draws.
-const GLYPHS: Glyphs = Glyphs::BASE;
 
 /// How long a scan runs before the readout shows it, so that quick refreshes do not flicker.
 const NOTICE: Duration = Duration::from_millis(300);
@@ -58,20 +54,12 @@ pub struct Activity {
 }
 
 impl Activity {
-    /// A shimmer of a random stock recipe that the base glyphs draw and that does not listen, as
-    /// memview hears nothing. memview scans as fast as it can, so it works briskly whenever a scan
-    /// runs.
+    /// The process's stock shimmer, which works briskly whenever a scan runs, since memview scans
+    /// as fast as it can.
     pub fn summon(now: Instant) -> Result<Self> {
-        let seed = RandomState::new().hash_one(());
-        let fitting: Vec<&'static Recipe> = stock::ROSTER
-            .iter()
-            .filter(|recipe| recipe.fits(GLYPHS).is_ok() && !recipe.listens())
-            .collect();
-        let recipe = seed
-            .checked_rem(u64::try_from(fitting.len())?)
-            .and_then(|pick| fitting.get(usize::try_from(pick).ok()?))
-            .ok_or_else(|| eyre!("no stock shimmer draws with the base glyphs"))?;
-        let mut shimmer = Shimmer::new(recipe, seed, GLYPHS)?;
+        let ember =
+            Ember::kindle().ok_or_else(|| eyre!("no stock shimmer draws with the base glyphs"))?;
+        let mut shimmer = ember.light(());
         shimmer.set_intensity(Intensity::BRISK);
         Ok(Self {
             shimmer,

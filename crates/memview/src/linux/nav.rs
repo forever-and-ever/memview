@@ -1,4 +1,5 @@
-use crossterm::event::{KeyCode, KeyEvent, KeyModifiers};
+use crossterm::event::KeyCode;
+use tui_eternal::{Binding, Command, Section, Shortcut};
 
 macro_rules! tab_catalog {
     ($($variant:ident => {
@@ -46,12 +47,12 @@ macro_rules! tab_catalog {
             }
 
             #[must_use]
-            pub fn bindings(self) -> &'static [Binding] {
+            pub fn bindings(self) -> &'static [Binding<Action>] {
                 match self {$(Self::$variant => $bindings),+}
             }
 
             #[must_use]
-            pub fn navigation(self) -> &'static [Binding] {
+            pub fn navigation(self) -> &'static [Binding<Action>] {
                 match self {$(Self::$variant => $navigation),+}
             }
         }
@@ -91,9 +92,25 @@ tab_catalog! {
     },
 }
 
+impl Tab {
+    /// The sections in force on this tab, most specific first.
+    pub fn sections(self) -> [Section<Action>; 3] {
+        [
+            Section {
+                title: self.title(),
+                bindings: self.bindings(),
+            },
+            Section {
+                title: "Navigation",
+                bindings: self.navigation(),
+            },
+            APPLICATION,
+        ]
+    }
+}
+
 #[derive(Clone, Copy, Debug, Eq, PartialEq)]
 pub enum Action {
-    Ignore,
     Quit,
     ShowHelp,
     OpenSearch,
@@ -127,496 +144,285 @@ pub enum FoldAction {
     HideLevel,
 }
 
-#[derive(Clone, Debug, Eq, PartialEq)]
-enum Chord {
-    Char(char),
-    Code(KeyCode),
-    Control(char),
-    Pair(char, char),
-}
+const APPLICATION: Section<Action> = Section {
+    title: "Application",
+    bindings: &[
+        Binding::new(
+            "1-4",
+            "go to the pane of that number",
+            &[
+                Command(Shortcut::Char('1'), Action::SelectTab(Tab::Overview)),
+                Command(Shortcut::Char('2'), Action::SelectTab(Tab::Processes)),
+                Command(Shortcut::Char('3'), Action::SelectTab(Tab::Tmpfs)),
+                Command(Shortcut::Char('4'), Action::SelectTab(Tab::Shared)),
+            ],
+        ),
+        Binding::new(
+            "Tab/Shift-Tab",
+            "go to the next or previous pane",
+            &[
+                Command(Shortcut::Code(KeyCode::Tab), Action::NextTab),
+                Command(Shortcut::Code(KeyCode::BackTab), Action::PreviousTab),
+            ],
+        ),
+        Binding::new(
+            "/",
+            "filter the current ledger's rows by regexp; an empty search clears",
+            &[Command(Shortcut::Char('/'), Action::OpenSearch)],
+        )
+        .hint("/", "search"),
+        Binding::new(
+            "f",
+            "clear the active regexp filter",
+            &[Command(Shortcut::Char('f'), Action::ClearSearch)],
+        ),
+        Binding::new(
+            "?",
+            "show this help",
+            &[Command(Shortcut::Char('?'), Action::ShowHelp)],
+        )
+        .hint("?", "help"),
+        Binding::new(
+            "q Ctrl-C",
+            "quit",
+            &[
+                Command(Shortcut::Char('q'), Action::Quit),
+                Command(Shortcut::Ctrl('c'), Action::Quit),
+            ],
+        )
+        .hint("q", "quit"),
+    ],
+};
 
-impl Chord {
-    fn matches_key(&self, key: KeyEvent) -> bool {
-        let command_modifier = key.modifiers.intersects(
-            KeyModifiers::CONTROL
-                | KeyModifiers::ALT
-                | KeyModifiers::SUPER
-                | KeyModifiers::HYPER
-                | KeyModifiers::META,
-        );
-        match self {
-            Self::Char(character) => key.code == KeyCode::Char(*character) && !command_modifier,
-            Self::Code(code) => key.code == *code && !command_modifier,
-            Self::Control(character) => {
-                key.code == KeyCode::Char(*character)
-                    && key.modifiers.contains(KeyModifiers::CONTROL)
-            }
-            Self::Pair(_, _) => false,
-        }
-    }
-
-    fn begins_with(&self, prefix: char) -> bool {
-        matches!(self, Self::Pair(first, _) if *first == prefix)
-    }
-
-    fn matches_pair(&self, prefix: char, suffix: char) -> bool {
-        matches!(self, Self::Pair(first, second) if (*first, *second) == (prefix, suffix))
-    }
-}
-
-#[derive(Clone, Debug, Eq, PartialEq)]
-struct Command {
-    chord: Chord,
-    action: Action,
-}
-
-#[derive(Clone, Copy, Debug, Eq, PartialEq)]
-pub struct FooterHint {
-    pub key: &'static str,
-    pub action: &'static str,
-}
-
-#[derive(Clone, Debug, Eq, PartialEq)]
-pub struct Binding {
-    pub key: &'static str,
-    pub description: &'static str,
-    pub footer: Option<FooterHint>,
-    commands: &'static [Command],
-}
-
-impl Binding {
-    pub fn resolve(&self, key: KeyEvent) -> Option<Action> {
-        self.commands
-            .iter()
-            .find(|command| command.chord.matches_key(key))
-            .map(|command| command.action)
-    }
-
-    fn begins_with(&self, prefix: char) -> bool {
-        self.commands
-            .iter()
-            .any(|command| command.chord.begins_with(prefix))
-    }
-
-    fn resolve_pair(&self, prefix: char, suffix: char) -> Option<Action> {
-        self.commands
-            .iter()
-            .find(|command| command.chord.matches_pair(prefix, suffix))
-            .map(|command| command.action)
-    }
-}
-
-#[derive(Clone, Copy, Debug, Eq, PartialEq)]
-pub enum Resolution {
-    Ignored,
-    Pending,
-    Command(Action),
-}
-
-#[derive(Clone, Copy, Debug, Default, Eq, PartialEq)]
-pub struct Keymap {
-    prefix: Option<char>,
-}
-
-impl Keymap {
-    pub fn resolve(&mut self, tab: Tab, key: KeyEvent) -> Resolution {
-        if let Some(prefix) = self.prefix.take() {
-            return plain_char(key)
-                .and_then(|suffix| resolve_pair(tab, prefix, suffix))
-                .map_or(Resolution::Ignored, Resolution::Command);
-        }
-        if let Some(action) = resolve(tab, key) {
-            return Resolution::Command(action);
-        }
-        if let Some(prefix) = plain_char(key).filter(|prefix| begins_sequence(tab, *prefix)) {
-            self.prefix = Some(prefix);
-            return Resolution::Pending;
-        }
-        Resolution::Ignored
-    }
-
-    pub fn cancel(&mut self) {
-        self.prefix = None;
-    }
-}
-
-#[derive(Clone, Copy, Debug)]
-pub struct BindingSections {
-    pub global: &'static [Binding],
-    pub pane_title: &'static str,
-    pub navigation: &'static [Binding],
-    pub pane: &'static [Binding],
-}
-
-macro_rules! commands {
-    ($(($chord:expr, $action:expr)),+ $(,)?) => {
-        &[$(Command { chord: $chord, action: $action }),+]
-    };
-}
-
-macro_rules! binding {
-    ($key:literal, $description:literal, $commands:expr) => {
-        Binding {
-            key: $key,
-            description: $description,
-            footer: None,
-            commands: $commands,
-        }
-    };
-    ($key:literal, $description:literal, $footer_key:literal, $footer_action:literal, $commands:expr) => {
-        Binding {
-            key: $key,
-            description: $description,
-            footer: Some(FooterHint {
-                key: $footer_key,
-                action: $footer_action,
-            }),
-            commands: $commands,
-        }
-    };
-}
-
-const GLOBAL_BINDINGS: &[Binding] = &[
-    binding!(
-        "1-4 / Tab / Shift-Tab",
-        "switch pane",
-        commands![
-            (Chord::Char('1'), Action::SelectTab(Tab::Overview)),
-            (Chord::Char('2'), Action::SelectTab(Tab::Processes)),
-            (Chord::Char('3'), Action::SelectTab(Tab::Tmpfs)),
-            (Chord::Char('4'), Action::SelectTab(Tab::Shared)),
-            (Chord::Code(KeyCode::Tab), Action::NextTab),
-            (Chord::Code(KeyCode::BackTab), Action::PreviousTab),
-        ]
-    ),
-    binding!(
-        "?",
-        "show this help",
-        "?",
-        "help",
-        commands![(Chord::Char('?'), Action::ShowHelp)]
-    ),
-    binding!(
-        "/",
-        "filter current ledger rows by regexp; empty search clears",
-        "/",
-        "search",
-        commands![(Chord::Char('/'), Action::OpenSearch)]
-    ),
-    binding!(
-        "f",
-        "clear active regexp filter",
-        commands![(Chord::Char('f'), Action::ClearSearch)]
-    ),
-    binding!(
-        "Esc",
-        "close the active modal; no-op at top level",
-        commands![(Chord::Code(KeyCode::Esc), Action::Ignore)]
-    ),
-    binding!(
-        "q / Ctrl-C",
-        "quit",
-        "q",
-        "quit",
-        commands![
-            (Chord::Char('q'), Action::Quit),
-            (Chord::Control('c'), Action::Quit),
-        ]
-    ),
-];
-
-const OVERVIEW_BINDINGS: &[Binding] = &[
-    binding!(
+const OVERVIEW_BINDINGS: &[Binding<Action>] = &[
+    Binding::new(
         "r",
         "refresh kernel counters and SysV shm",
-        "r",
-        "refresh",
-        commands![(Chord::Char('r'), Action::Refresh)]
-    ),
-    binding!(
+        &[Command(Shortcut::Char('r'), Action::Refresh)],
+    )
+    .hint("r", "refresh"),
+    Binding::new(
         "s",
         "cycle memory lens",
-        "s",
-        "lens",
-        commands![(Chord::Char('s'), Action::CycleMetric)]
-    ),
+        &[Command(Shortcut::Char('s'), Action::CycleMetric)],
+    )
+    .hint("s", "lens"),
 ];
 
-const TREE_NAVIGATION: &[Binding] = &[
-    binding!(
-        "j/k / arrows",
-        "move selection",
-        "j/k/Pg/wheel",
-        "move",
-        commands![
-            (Chord::Char('j'), Action::Move(1)),
-            (Chord::Code(KeyCode::Down), Action::Move(1)),
-            (Chord::Char('k'), Action::Move(-1)),
-            (Chord::Code(KeyCode::Up), Action::Move(-1)),
-        ]
-    ),
-    binding!(
-        "gg / G",
-        "jump to first or last row",
-        "gg/G",
-        "edge",
-        commands![
-            (Chord::Pair('g', 'g'), Action::FirstRow),
-            (Chord::Char('G'), Action::LastRow),
-        ]
-    ),
-    binding!(
-        "PgUp / PgDn",
-        "move selection by one visible pane",
-        commands![
-            (Chord::Code(KeyCode::PageUp), Action::PageUp),
-            (Chord::Code(KeyCode::PageDown), Action::PageDown),
-        ]
-    ),
-    binding!("wheel", "move selection one row per detent", &[]),
-    binding!(
-        "h/l / Left/Right",
-        "collapse or expand selected subtree",
-        commands![
-            (Chord::Char('h'), Action::Fold(FoldAction::Collapse)),
-            (
-                Chord::Code(KeyCode::Left),
-                Action::Fold(FoldAction::Collapse)
+const MOVE: Binding<Action> = Binding::new(
+    "j/k ↓/↑",
+    "move the selection down or up",
+    &[
+        Command(Shortcut::Char('j'), Action::Move(1)),
+        Command(Shortcut::Char('k'), Action::Move(-1)),
+        Command(Shortcut::Code(KeyCode::Down), Action::Move(1)),
+        Command(Shortcut::Code(KeyCode::Up), Action::Move(-1)),
+    ],
+)
+.hint("j/k/Pg/wheel", "move");
+
+const EDGE: Binding<Action> = Binding::new(
+    "gg/G",
+    "jump to the first or last row",
+    &[
+        Command(Shortcut::Seq('g', 'g'), Action::FirstRow),
+        Command(Shortcut::Char('G'), Action::LastRow),
+    ],
+)
+.hint("gg/G", "edge");
+
+const PAGE: Binding<Action> = Binding::new(
+    "PgUp/PgDn",
+    "move the selection by one visible pane, up or down",
+    &[
+        Command(Shortcut::Code(KeyCode::PageUp), Action::PageUp),
+        Command(Shortcut::Code(KeyCode::PageDown), Action::PageDown),
+    ],
+);
+
+const WHEEL: Binding<Action> = Binding::new("wheel", "move the selection one row per detent", &[]);
+
+const FLAT_NAVIGATION: &[Binding<Action>] = &[MOVE, EDGE, PAGE, WHEEL];
+
+const TREE_NAVIGATION: &[Binding<Action>] = &[
+    MOVE,
+    EDGE,
+    PAGE,
+    WHEEL,
+    Binding::new(
+        "h/l ←/→",
+        "collapse or expand the selected subtree",
+        &[
+            Command(Shortcut::Char('h'), Action::Fold(FoldAction::Collapse)),
+            Command(Shortcut::Char('l'), Action::Fold(FoldAction::Expand)),
+            Command(
+                Shortcut::Code(KeyCode::Left),
+                Action::Fold(FoldAction::Collapse),
             ),
-            (Chord::Char('l'), Action::Fold(FoldAction::Expand)),
-            (
-                Chord::Code(KeyCode::Right),
-                Action::Fold(FoldAction::Expand)
+            Command(
+                Shortcut::Code(KeyCode::Right),
+                Action::Fold(FoldAction::Expand),
             ),
-        ]
+        ],
     ),
-    binding!(
+    Binding::new(
         "Enter",
-        "toggle selected subtree fold, including auto-folds",
-        commands![(
-            Chord::Code(KeyCode::Enter),
-            Action::Fold(FoldAction::Toggle)
-        )]
+        "toggle the selected subtree's fold, including auto-folds",
+        &[Command(
+            Shortcut::Code(KeyCode::Enter),
+            Action::Fold(FoldAction::Toggle),
+        )],
     ),
-    binding!(
-        "za / zo / zc",
+    Binding::new(
+        "za/zo/zc",
         "toggle, expand, or collapse the selected fold",
-        "z…",
-        "fold",
-        commands![
-            (Chord::Pair('z', 'a'), Action::Fold(FoldAction::Toggle)),
-            (Chord::Pair('z', 'o'), Action::Fold(FoldAction::Expand)),
-            (Chord::Pair('z', 'c'), Action::Fold(FoldAction::Collapse)),
-        ]
-    ),
-    binding!(
-        "zA / zO / zC",
+        &[
+            Command(Shortcut::Seq('z', 'a'), Action::Fold(FoldAction::Toggle)),
+            Command(Shortcut::Seq('z', 'o'), Action::Fold(FoldAction::Expand)),
+            Command(Shortcut::Seq('z', 'c'), Action::Fold(FoldAction::Collapse)),
+        ],
+    )
+    .hint("z…", "fold"),
+    Binding::new(
+        "zA/zO/zC",
         "toggle, expand, or collapse the selected fold recursively",
-        commands![
-            (
-                Chord::Pair('z', 'A'),
-                Action::Fold(FoldAction::ToggleRecursive)
+        &[
+            Command(
+                Shortcut::Seq('z', 'A'),
+                Action::Fold(FoldAction::ToggleRecursive),
             ),
-            (
-                Chord::Pair('z', 'O'),
-                Action::Fold(FoldAction::ExpandRecursive)
+            Command(
+                Shortcut::Seq('z', 'O'),
+                Action::Fold(FoldAction::ExpandRecursive),
             ),
-            (
-                Chord::Pair('z', 'C'),
-                Action::Fold(FoldAction::CollapseRecursive)
+            Command(
+                Shortcut::Seq('z', 'C'),
+                Action::Fold(FoldAction::CollapseRecursive),
             ),
-        ]
+        ],
     ),
-    binding!(
-        "zR / zM",
+    Binding::new(
+        "zR/zM",
         "expand or collapse every fold",
-        commands![
-            (Chord::Pair('z', 'R'), Action::Fold(FoldAction::ExpandAll)),
-            (Chord::Pair('z', 'M'), Action::Fold(FoldAction::CollapseAll)),
-        ]
+        &[
+            Command(Shortcut::Seq('z', 'R'), Action::Fold(FoldAction::ExpandAll)),
+            Command(
+                Shortcut::Seq('z', 'M'),
+                Action::Fold(FoldAction::CollapseAll),
+            ),
+        ],
     ),
-    binding!(
-        "zr / zm",
+    Binding::new(
+        "zr/zm",
         "reveal or hide one tree level",
-        commands![
-            (Chord::Pair('z', 'r'), Action::Fold(FoldAction::RevealLevel)),
-            (Chord::Pair('z', 'm'), Action::Fold(FoldAction::HideLevel)),
-        ]
+        &[
+            Command(
+                Shortcut::Seq('z', 'r'),
+                Action::Fold(FoldAction::RevealLevel),
+            ),
+            Command(Shortcut::Seq('z', 'm'), Action::Fold(FoldAction::HideLevel)),
+        ],
     ),
 ];
 
-const PROCESS_ACTIONS: &[Binding] = &[
-    binding!(
+const PROCESS_ACTIONS: &[Binding<Action>] = &[
+    Binding::new(
         "s",
         "cycle sort metric",
-        "s",
-        "sort",
-        commands![(Chord::Char('s'), Action::CycleMetric)]
-    ),
-    binding!(
+        &[Command(Shortcut::Char('s'), Action::CycleMetric)],
+    )
+    .hint("s", "sort"),
+    Binding::new(
         "m",
         "toggle self vs self+children accounting",
-        "m",
-        "mode",
-        commands![(Chord::Char('m'), Action::CycleScope)]
-    ),
-    binding!(
+        &[Command(Shortcut::Char('m'), Action::CycleScope)],
+    )
+    .hint("m", "mode"),
+    Binding::new(
         "r",
         "force an immediate process memory rescan",
-        "r",
-        "rescan",
-        commands![(Chord::Char('r'), Action::Refresh)]
-    ),
-    binding!(
+        &[Command(Shortcut::Char('r'), Action::Refresh)],
+    )
+    .hint("r", "rescan"),
+    Binding::new(
         "K",
         "confirm SIGTERM for selected process",
-        "K",
-        "SIGTERM",
-        commands![(Chord::Char('K'), Action::Kill)]
-    ),
+        &[Command(Shortcut::Char('K'), Action::Kill)],
+    )
+    .hint("K", "SIGTERM"),
 ];
 
-const TMPFS_ACTIONS: &[Binding] = &[
-    binding!(
+const TMPFS_ACTIONS: &[Binding<Action>] = &[
+    Binding::new(
         "m",
         "toggle self vs self+children search context",
-        "m",
-        "mode",
-        commands![(Chord::Char('m'), Action::CycleScope)]
-    ),
-    binding!(
+        &[Command(Shortcut::Char('m'), Action::CycleScope)],
+    )
+    .hint("m", "mode"),
+    Binding::new(
         "r",
         "replace the complete tmpfs capture generation",
-        "r",
-        "refresh",
-        commands![(Chord::Char('r'), Action::Refresh)]
-    ),
+        &[Command(Shortcut::Char('r'), Action::Refresh)],
+    )
+    .hint("r", "refresh"),
 ];
 
-const FLAT_NAVIGATION: &[Binding] = &[
-    binding!(
-        "j/k / arrows",
-        "move selection",
-        "j/k/Pg/wheel",
-        "move",
-        commands![
-            (Chord::Char('j'), Action::Move(1)),
-            (Chord::Code(KeyCode::Down), Action::Move(1)),
-            (Chord::Char('k'), Action::Move(-1)),
-            (Chord::Code(KeyCode::Up), Action::Move(-1)),
-        ]
-    ),
-    binding!(
-        "gg / G",
-        "jump to first or last row",
-        "gg/G",
-        "edge",
-        commands![
-            (Chord::Pair('g', 'g'), Action::FirstRow),
-            (Chord::Char('G'), Action::LastRow),
-        ]
-    ),
-    binding!(
-        "PgUp / PgDn",
-        "move selection by one visible pane",
-        commands![
-            (Chord::Code(KeyCode::PageUp), Action::PageUp),
-            (Chord::Code(KeyCode::PageDown), Action::PageDown),
-        ]
-    ),
-    binding!("wheel", "move selection one row per detent", &[]),
-];
-
-const SHARED_ACTIONS: &[Binding] = &[
-    binding!(
+const SHARED_ACTIONS: &[Binding<Action>] = &[
+    Binding::new(
         "s",
         "cycle memory lens",
-        "s",
-        "sort",
-        commands![(Chord::Char('s'), Action::CycleMetric)]
-    ),
-    binding!(
+        &[Command(Shortcut::Char('s'), Action::CycleMetric)],
+    )
+    .hint("s", "sort"),
+    Binding::new(
         "r",
         "force an immediate shared-object rescan",
-        "r",
-        "rescan",
-        commands![(Chord::Char('r'), Action::Refresh)]
-    ),
+        &[Command(Shortcut::Char('r'), Action::Refresh)],
+    )
+    .hint("r", "rescan"),
 ];
-
-pub fn global_bindings() -> &'static [Binding] {
-    GLOBAL_BINDINGS
-}
-
-pub fn resolve(tab: Tab, key: KeyEvent) -> Option<Action> {
-    bindings(tab).find_map(|binding| binding.resolve(key))
-}
-
-fn begins_sequence(tab: Tab, prefix: char) -> bool {
-    bindings(tab).any(|binding| binding.begins_with(prefix))
-}
-
-fn resolve_pair(tab: Tab, prefix: char, suffix: char) -> Option<Action> {
-    bindings(tab).find_map(|binding| binding.resolve_pair(prefix, suffix))
-}
-
-fn bindings(tab: Tab) -> impl Iterator<Item = &'static Binding> {
-    GLOBAL_BINDINGS
-        .iter()
-        .chain(tab.navigation())
-        .chain(tab.bindings())
-}
-
-fn plain_char(key: KeyEvent) -> Option<char> {
-    if key.modifiers.intersects(
-        KeyModifiers::CONTROL
-            | KeyModifiers::ALT
-            | KeyModifiers::SUPER
-            | KeyModifiers::HYPER
-            | KeyModifiers::META,
-    ) {
-        return None;
-    }
-    match key.code {
-        KeyCode::Char(character) => Some(character),
-        _ => None,
-    }
-}
 
 #[cfg(test)]
 mod tests {
     use super::*;
+    use crossterm::event::{KeyEvent, KeyModifiers};
+    use tui_eternal::{Keymap, Resolution};
+
+    fn plain(character: char) -> KeyEvent {
+        KeyEvent::new(KeyCode::Char(character), KeyModifiers::NONE)
+    }
 
     #[test]
     fn pane_catalog_is_the_dispatch_boundary() {
-        let plain = |character| KeyEvent::new(KeyCode::Char(character), KeyModifiers::NONE);
+        let resolve =
+            |tab: Tab, character| Keymap::default().resolve(&tab.sections(), plain(character));
         assert_eq!(
-            resolve(Tab::Processes, plain('m')),
-            Some(Action::CycleScope)
+            resolve(Tab::Processes, 'm'),
+            Resolution::Command(Action::CycleScope)
         );
-        assert_eq!(resolve(Tab::Shared, plain('m')), None);
-        assert_eq!(resolve(Tab::Shared, plain('s')), Some(Action::CycleMetric));
-        assert_eq!(resolve(Tab::Tmpfs, plain('s')), None);
+        assert_eq!(resolve(Tab::Shared, 'm'), Resolution::Ignored);
+        assert_eq!(
+            resolve(Tab::Shared, 's'),
+            Resolution::Command(Action::CycleMetric)
+        );
+        assert_eq!(resolve(Tab::Tmpfs, 's'), Resolution::Ignored);
     }
 
     #[test]
     fn keymap_resolves_declared_sequences_only_in_their_panes() {
-        let plain = |character| KeyEvent::new(KeyCode::Char(character), KeyModifiers::NONE);
         let mut keymap = Keymap::default();
+        let mut resolve = |tab: Tab, character| keymap.resolve(&tab.sections(), plain(character));
 
+        assert_eq!(resolve(Tab::Processes, 'z'), Resolution::Pending);
         assert_eq!(
-            keymap.resolve(Tab::Processes, plain('z')),
-            Resolution::Pending
-        );
-        assert_eq!(
-            keymap.resolve(Tab::Processes, plain('O')),
+            resolve(Tab::Processes, 'O'),
             Resolution::Command(Action::Fold(FoldAction::ExpandRecursive))
         );
-        assert_eq!(keymap.resolve(Tab::Shared, plain('g')), Resolution::Pending);
+        assert_eq!(resolve(Tab::Shared, 'g'), Resolution::Pending);
         assert_eq!(
-            keymap.resolve(Tab::Shared, plain('g')),
+            resolve(Tab::Shared, 'g'),
             Resolution::Command(Action::FirstRow)
         );
-        assert_eq!(keymap.resolve(Tab::Shared, plain('z')), Resolution::Ignored);
+        assert_eq!(resolve(Tab::Shared, 'z'), Resolution::Ignored);
     }
 }

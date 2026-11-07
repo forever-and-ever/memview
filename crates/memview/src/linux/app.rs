@@ -3,8 +3,8 @@ use super::model::{
     ProcessNode, Processes, Shared, SharedObject, Tmpfs, TmpfsMount, TmpfsNode, TmpfsNodeId,
     TmpfsStorageId,
 };
-use super::nav::{self, Action, FoldAction};
-pub use super::nav::{Binding, BindingSections, Tab};
+pub use super::nav::Tab;
+use super::nav::{Action, FoldAction};
 use super::probe;
 use super::search::{Search, SearchDraft, SearchRole, SearchSummary};
 use color_eyre::eyre::Result;
@@ -13,6 +13,7 @@ use rustix::fd::OwnedFd;
 use rustix::process::{Pid as KernelPid, PidfdFlags, Signal, pidfd_open, pidfd_send_signal};
 use std::collections::{BTreeMap, BTreeSet};
 use std::time::{Duration, Instant, SystemTime};
+use tui_eternal::{Help, Keymap, Resolution, Section, Shortcut, Verdict};
 
 mod ledgers;
 mod mappings;
@@ -560,11 +561,11 @@ pub struct App {
     shared_rows: PaneRows<FlatSharedRow>,
     projection_debt: ProjectionDebt,
     page_rows: PageRows,
-    keymap: nav::Keymap,
+    keymap: Keymap,
 }
 
 enum Modal {
-    Help { scroll: u16 },
+    Help(Help),
     Search(SearchDraft),
     Kill(KillConfirmation),
 }
@@ -652,7 +653,7 @@ impl App {
             shared_rows: PaneRows::default(),
             projection_debt: ProjectionDebt::default(),
             page_rows: PageRows::default(),
-            keymap: nav::Keymap::default(),
+            keymap: Keymap::default(),
         }
     }
 
@@ -995,13 +996,8 @@ impl App {
         warnings
     }
 
-    pub fn binding_sections(&self) -> BindingSections {
-        BindingSections {
-            global: nav::global_bindings(),
-            pane_title: self.tab.title(),
-            navigation: self.tab.navigation(),
-            pane: self.tab.bindings(),
-        }
+    pub fn sections(&self) -> [Section<Action>; 3] {
+        self.tab.sections()
     }
 
     fn rebuild_process_rows(&mut self) {
@@ -1065,25 +1061,21 @@ impl App {
     pub fn search_draft(&self) -> Option<&SearchDraft> {
         match &self.modal {
             Some(Modal::Search(draft)) => Some(draft),
-            Some(Modal::Help { .. } | Modal::Kill(_)) | None => None,
+            Some(Modal::Help(_) | Modal::Kill(_)) | None => None,
         }
     }
 
-    pub fn help_open(&self) -> bool {
-        matches!(self.modal, Some(Modal::Help { .. }))
-    }
-
-    pub fn help_scroll(&self) -> u16 {
-        match self.modal {
-            Some(Modal::Help { scroll }) => scroll,
-            Some(Modal::Search(_) | Modal::Kill(_)) | None => 0,
+    pub fn help(&self) -> Option<&Help> {
+        match &self.modal {
+            Some(Modal::Help(help)) => Some(help),
+            Some(Modal::Search(_) | Modal::Kill(_)) | None => None,
         }
     }
 
     pub fn kill_confirmation(&self) -> Option<&KillConfirmation> {
         match &self.modal {
             Some(Modal::Kill(confirmation)) => Some(confirmation),
-            Some(Modal::Help { .. } | Modal::Search(_)) | None => None,
+            Some(Modal::Help(_) | Modal::Search(_)) | None => None,
         }
     }
 
@@ -1200,21 +1192,27 @@ impl App {
         if self.search_draft().is_some() {
             return self.handle_search_key(key);
         }
-        if self.help_open() {
-            return self.handle_help_key(key);
+        if let Some(Modal::Help(help)) = &mut self.modal {
+            // Ctrl-C quits from anywhere, the help card included.
+            if Shortcut::Ctrl('c').matches(key) {
+                return true;
+            }
+            if help.key(key) == Verdict::Dismiss {
+                self.modal = None;
+            }
+            return false;
         }
 
-        match self.keymap.resolve(self.tab, key) {
-            nav::Resolution::Ignored | nav::Resolution::Pending => false,
-            nav::Resolution::Command(action) => self.execute(action, commands),
+        match self.keymap.resolve(&self.tab.sections(), key) {
+            Resolution::Ignored | Resolution::Pending => false,
+            Resolution::Command(action) => self.execute(action, commands),
         }
     }
 
     fn execute(&mut self, action: Action, commands: &WorkerPort) -> bool {
         match action {
-            Action::Ignore => {}
             Action::Quit => return true,
-            Action::ShowHelp => self.modal = Some(Modal::Help { scroll: 0 }),
+            Action::ShowHelp => self.modal = Some(Modal::Help(Help::default())),
             Action::OpenSearch => self.open_search(),
             Action::ClearSearch => self.clear_search(),
             Action::NextTab => self.select_tab(self.tab.next(), commands),
@@ -1258,10 +1256,11 @@ impl App {
     }
 
     pub fn handle_mouse(&mut self, mouse: MouseEvent, commands: &WorkerPort) -> bool {
-        if self.modal.is_some() {
-            return false;
+        match &mut self.modal {
+            Some(Modal::Help(help)) => return help.mouse(mouse),
+            Some(Modal::Search(_) | Modal::Kill(_)) => return false,
+            None => self.keymap.cancel(),
         }
-        self.keymap.cancel();
 
         match mouse.kind {
             MouseEventKind::ScrollDown => self.move_selection_and_request_mappings(1, commands),
@@ -1386,54 +1385,6 @@ impl App {
                 draft.fail(error);
                 self.modal = Some(Modal::Search(draft));
             }
-        }
-    }
-
-    fn handle_help_key(&mut self, key: KeyEvent) -> bool {
-        let page = self.page_rows.0.min(usize::from(u16::MAX)) as u16;
-        match key.code {
-            KeyCode::Char('c') if key.modifiers.contains(KeyModifiers::CONTROL) => true,
-            KeyCode::Esc | KeyCode::Char('?') => {
-                self.modal = None;
-                false
-            }
-            KeyCode::Up | KeyCode::Char('k') => {
-                if let Some(Modal::Help { scroll }) = self.modal.as_mut() {
-                    *scroll = scroll.saturating_sub(1);
-                }
-                false
-            }
-            KeyCode::Down | KeyCode::Char('j') => {
-                if let Some(Modal::Help { scroll }) = self.modal.as_mut() {
-                    *scroll = scroll.saturating_add(1);
-                }
-                false
-            }
-            KeyCode::PageUp => {
-                if let Some(Modal::Help { scroll }) = self.modal.as_mut() {
-                    *scroll = scroll.saturating_sub(page);
-                }
-                false
-            }
-            KeyCode::PageDown => {
-                if let Some(Modal::Help { scroll }) = self.modal.as_mut() {
-                    *scroll = scroll.saturating_add(page);
-                }
-                false
-            }
-            KeyCode::Home | KeyCode::Char('g') => {
-                if let Some(Modal::Help { scroll }) = self.modal.as_mut() {
-                    *scroll = 0;
-                }
-                false
-            }
-            KeyCode::End | KeyCode::Char('G') => {
-                if let Some(Modal::Help { scroll }) = self.modal.as_mut() {
-                    *scroll = u16::MAX;
-                }
-                false
-            }
-            _ => false,
         }
     }
 
